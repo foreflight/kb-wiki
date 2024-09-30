@@ -298,22 +298,6 @@ module.exports = {
   async created(page) {
     WIKI.logger.info(`(STORAGE/GIT) Committing new file [${page.localeCode}] ${page.path}...`)
     let fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
-
-    // Generate branch name for this new page
-    const branchName = `feature/new-${page.path.replace(/\//g, '-')}`
-
-    // Check if the branch exists locally or remotely
-    const branches = await this.git.branch(['-a'])
-    const branchExists = _.includes(branches.all, `remotes/origin/${branchName}`) || _.includes(branches.all, branchName)
-
-    if (branchExists) {
-      WIKI.logger.info(`(STORAGE/GIT) Branch ${branchName} already exists. Checking it out.`)
-      await this.git.checkout(branchName)
-    } else {
-      WIKI.logger.info(`(STORAGE/GIT) Creating and switching to new branch: ${branchName}`)
-      await this.git.checkoutLocalBranch(branchName)
-    }
-
     if (WIKI.config.lang.namespacing && WIKI.config.lang.code !== page.localeCode) {
       fileName = `${page.localeCode}/${fileName}`
     }
@@ -326,13 +310,7 @@ module.exports = {
       await this.git.commit(`docs: create ${page.path}`, fileName, {
         '--author': `"${page.authorName} <${page.authorEmail}>"`
       })
-      if (!branchExists) {
-        await this.git.push('origin', branchName, ['--set-upstream'])
-      } else {
-        await this.git.push('origin', branchName)
-      }
     }
-    await this.git.checkout('main')
   },
   /**
    * UPDATE
@@ -342,21 +320,6 @@ module.exports = {
   async updated(page) {
     WIKI.logger.info(`(STORAGE/GIT) Committing updated file [${page.localeCode}] ${page.path}...`)
     let fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
-
-    const branchName = `feature/new-${page.path.replace(/\//g, '-')}`
-
-    // Check if the branch exists locally or remotely
-    const branches = await this.git.branch(['-a'])
-    const branchExists = _.includes(branches.all, `remotes/origin/${branchName}`) || _.includes(branches.all, branchName)
-
-    if (branchExists) {
-      WIKI.logger.info(`(STORAGE/GIT) Branch ${branchName} already exists. Checking it out.`)
-      await this.git.checkout(branchName)
-    } else {
-      WIKI.logger.info(`(STORAGE/GIT) Creating and switching to new branch: ${branchName}`)
-      await this.git.checkoutLocalBranch(branchName)
-    }
-
     if (WIKI.config.lang.namespacing && WIKI.config.lang.code !== page.localeCode) {
       fileName = `${page.localeCode}/${fileName}`
     }
@@ -369,15 +332,7 @@ module.exports = {
       await this.git.commit(`docs: update ${page.path}`, fileName, {
         '--author': `"${page.authorName} <${page.authorEmail}>"`
       })
-
-      if (!branchExists) {
-        await this.git.push('origin', branchName, ['--set-upstream'])
-      } else {
-        await this.git.push('origin', branchName)
-      }
     }
-    await this.git.checkout('main')
-    // recaching logic go here?????
   },
   /**
    * DELETE
