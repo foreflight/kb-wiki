@@ -48,12 +48,13 @@ props:
     type: String
     title: Username
     order: 7
-
   basicPassword:
     type: String
     title: Password
+    hint: The PAT for the associated account
     order: 8
     sensitive: true
+
 actions:
   - handler: sync
     label: Check Status
