@@ -620,9 +620,6 @@ module.exports = class FFStorageSyncModule {
           await this.git.push('origin', branchName)
         }
       }
-
-      // After creation, run sync to update the database
-      await this.sync()
     } catch (error) {
       WIKI.logger.error(`(STORAGE/GIT) Error creating page '${page.path}': ${error.message}`)
     }
