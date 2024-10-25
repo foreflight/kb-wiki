@@ -21,6 +21,12 @@
             "type": "node",
             "request": "attach",
             "name": "Attach to Port",
+            "outFiles": [
+              "${workspaceFolder}/**/*.js",
+              "!${workspaceFolder}/server/core/worker.js",
+              "${workspaceFolder}/**/index.js"
+
+          ],
             "address": "localhost",
             "port": 9222
         }
