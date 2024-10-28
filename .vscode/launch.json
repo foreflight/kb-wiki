@@ -24,7 +24,8 @@
             "outFiles": [
               "${workspaceFolder}/**/*.js",
               "!${workspaceFolder}/server/core/worker.js",
-              "${workspaceFolder}/**/index.js"
+              "${workspaceFolder}/**/index.js",
+              "server/core/worker.js"
 
           ],
             "address": "localhost",

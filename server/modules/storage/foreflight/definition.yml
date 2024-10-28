@@ -56,6 +56,6 @@ props:
     sensitive: true
 
 actions:
-  - handler: sync
-    label: Check Status
-    hint: Check the status of pages
+  - handler: init
+    label: Reset All
+    hint: Reset Cache and DB
