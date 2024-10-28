@@ -6,7 +6,7 @@ const stream = require('stream')
 const Promise = require('bluebird')
 const pipeline = Promise.promisify(stream.pipeline)
 const klaw = require('klaw')
-const os = require('os')
+const Page = require('../../../models/pages')
 
 const pageHelper = require('../../../helpers/page')
 const assetHelper = require('../../../helpers/asset')
@@ -14,113 +14,141 @@ const commonDisk = require('../disk/common')
 
 /* global WIKI */
 module.exports = class FFStorageSyncModule {
-  constructor() {
-    this.git = null
+  constructor () {
+    this.git = sgit.simpleGit()
     this.repoPath = path.resolve(WIKI.ROOTPATH, WIKI.config.dataPath, 'repo')
   }
 
-  async activated() {
-    // not used
+  async activated () {
+    console.log('activated')
+    console.log(WIKI)
   }
-  async deactivated() {
-    // not used
+
+  async deactivated () {
+    console.log('deactivated')
   }
-  /**
-   * INIT
-   */
   async init() {
-    WIKI.logger.info('(STORAGE/GIT) Initializing...')
-    this.repoPath = path.resolve(WIKI.ROOTPATH, this.config.localRepoPath)
-    await fs.ensureDir(this.repoPath)
-    this.git = sgit(this.repoPath, { maxConcurrentProcesses: 1 })
+    try {
+      WIKI.logger.info('(STORAGE/GIT) Initializing...')
 
-    // Set custom binary path
-    if (!_.isEmpty(this.config.gitBinaryPath)) {
-      this.git.customBinary(this.config.gitBinaryPath)
-    }
+      // Step 1: Ensure the repoPath directory exists
+      this.repoPath = path.resolve(WIKI.ROOTPATH, this.config.localRepoPath)
+      await fs.ensureDir(this.repoPath)
 
-    // Initialize repo (if needed)
-    WIKI.logger.info('(STORAGE/GIT) Checking repository state...')
-    const isRepo = await this.git.checkIsRepo()
-    if (!isRepo) {
-      WIKI.logger.info('(STORAGE/GIT) Initializing local repository...')
-      await this.git.init()
-    }
+      // Step 2: Initialize Git with custom settings if necessary
+      this.git = sgit(this.repoPath, { maxConcurrentProcesses: 1 })
 
-    // Disable quotePath, color output
-    // Link https://git-scm.com/docs/git-config#Documentation/git-config.txt-corequotePath
-    await this.git.raw(['config', '--local', 'core.quotepath', false])
-    await this.git.raw(['config', '--local', 'color.ui', false])
-
-    // Set default author
-    await this.git.raw(['config', '--local', 'user.email', this.config.defaultEmail])
-    await this.git.raw(['config', '--local', 'user.name', this.config.defaultName])
-
-    // Purge existing remotes
-    WIKI.logger.info('(STORAGE/GIT) Listing existing remotes...')
-    const remotes = await this.git.getRemotes()
-    if (remotes.length > 0) {
-      WIKI.logger.info('(STORAGE/GIT) Purging existing remotes...')
-      for (let remote of remotes) {
-        await this.git.removeRemote(remote.name)
+      // Set custom binary path if provided
+      if (!_.isEmpty(this.config.gitBinaryPath)) {
+        this.git.customBinary(this.config.gitBinaryPath)
       }
-    }
 
-    // Add remote
-    WIKI.logger.info('(STORAGE/GIT) Setting SSL Verification config...')
-    await this.git.raw(['config', '--local', '--bool', 'http.sslVerify', _.toString(this.config.verifySSL)])
-    switch (this.config.authType) {
-      case 'ssh':
-        WIKI.logger.info('(STORAGE/GIT) Setting SSH Command config...')
-        if (this.config.sshPrivateKeyMode === 'contents') {
-          try {
-            this.config.sshPrivateKeyPath = path.resolve(WIKI.ROOTPATH, WIKI.config.dataPath, 'secure/git-ssh.pem')
-            await fs.outputFile(this.config.sshPrivateKeyPath, this.config.sshPrivateKeyContent + os.EOL, {
-              encoding: 'utf8',
-              mode: 0o600
-            })
-          } catch (err) {
-            WIKI.logger.error(err)
-            throw err
-          }
-        }
-        await this.git.addConfig('core.sshCommand', `ssh -i "${this.config.sshPrivateKeyPath}" -o StrictHostKeyChecking=no`)
-        WIKI.logger.info('(STORAGE/GIT) Adding origin remote via SSH...')
-        await this.git.addRemote('origin', this.config.repoUrl)
-        break
-      default:
-        WIKI.logger.info('(STORAGE/GIT) Adding origin remote via HTTP/S...')
-        let originUrl = ''
-        if (_.startsWith(this.config.repoUrl, 'http')) {
-          originUrl = this.config.repoUrl.replace('://', `://${encodeURI(this.config.basicUsername)}:${encodeURI(this.config.basicPassword)}@`)
+      // Step 3: Check if the repository is initialized
+      WIKI.logger.info('(STORAGE/GIT) Checking repository state...')
+      const isRepo = await this.git.checkIsRepo()
+      if (!isRepo) {
+        WIKI.logger.info('(STORAGE/GIT) Initializing local repository...')
+        await this.git.init()
+      }
+
+      // Step 4: Set Git configurations (disable quotePath and color output)
+      try {
+        await this.git.raw(['config', '--local', 'core.quotepath', 'false'])
+        await this.git.raw(['config', '--local', 'color.ui', 'false'])
+        await this.git.raw(['config', '--local', 'user.email', this.config.defaultEmail])
+        await this.git.raw(['config', '--local', 'user.name', this.config.defaultName])
+      } catch (error) {
+        if (error.message.includes('could not lock config file')) {
+          WIKI.logger.warn('Removing stale config lock file...')
+          await fs.remove(path.join(this.repoPath, '.git', 'config.lock')) // Remove the lock file
+          WIKI.logger.info('Retrying Git configuration...')
+          // Retry the Git configuration after removing the lock
+          await this.git.raw(['config', '--local', 'core.quotepath', 'false'])
+          await this.git.raw(['config', '--local', 'color.ui', 'false'])
+          await this.git.raw(['config', '--local', 'user.email', this.config.defaultEmail])
+          await this.git.raw(['config', '--local', 'user.name', this.config.defaultName])
         } else {
-          originUrl = `https://${encodeURI(this.config.basicUsername)}:${encodeURI(this.config.basicPassword)}@${this.config.repoUrl}`
+          throw error
         }
-        await this.git.addRemote('origin', originUrl)
-        break
+      }
+
+      // Step 5: Handle remotes - Remove existing ones and re-add origin
+      WIKI.logger.info('(STORAGE/GIT) Checking and updating remotes...')
+      const remotes = await this.git.getRemotes()
+      if (remotes.length > 0) {
+        WIKI.logger.info('(STORAGE/GIT) Removing existing remotes...')
+        for (let remote of remotes) {
+          await this.git.removeRemote(remote.name)
+        }
+      }
+
+      // Add the origin remote
+      let originUrl = ''
+      if (_.startsWith(this.config.repoUrl, 'http')) {
+        originUrl = this.config.repoUrl.replace('://', `://${encodeURI(this.config.basicUsername)}:${encodeURI(this.config.basicPassword)}@`)
+      } else {
+        originUrl = `https://${encodeURI(this.config.basicUsername)}:${encodeURI(this.config.basicPassword)}@${this.config.repoUrl}`
+      }
+
+      WIKI.logger.info('(STORAGE/GIT) Adding origin remote...')
+      await this.git.addRemote('origin', originUrl)
+
+      // Step 6: Fetch and update remotes
+      WIKI.logger.info('(STORAGE/GIT) Fetching updates from remote...')
+      await this.git.fetch('origin')
+
+      // Step 7: Check if the desired branch exists
+      const branches = await this.git.branch()
+      if (!_.includes(branches.all, this.config.branch) && !_.includes(branches.all, `remotes/origin/${this.config.branch}`)) {
+        throw new Error(`Invalid branch! Branch ${this.config.branch} does not exist on the remote.`)
+      }
+
+      // Step 8: Checkout the specified branch
+      WIKI.logger.info(`(STORAGE/GIT) Checking out branch '${this.config.branch}'...`)
+      await this.git.checkout(this.config.branch)
+
+      // Step 9: Perform initial sync
+      await this.sync()
+
+      WIKI.logger.info('(STORAGE/GIT) Initialization completed successfully.')
+    } catch (error) {
+      WIKI.logger.error(`(STORAGE/GIT) Initialization failed: ${error.message}`)
+      throw error
     }
-
-    // Fetch updates for remote
-    WIKI.logger.info('(STORAGE/GIT) Fetch updates from remote...')
-    await this.git.raw(['remote', 'update', 'origin'])
-
-    // Checkout branch
-    const branches = await this.git.branch()
-    if (!_.includes(branches.all, this.config.branch) && !_.includes(branches.all, `remotes/origin/${this.config.branch}`)) {
-      throw new Error('Invalid branch! Make sure it exists on the remote first.')
-    }
-    WIKI.logger.info(`(STORAGE/GIT) Checking out branch ${this.config.branch}...`)
-    await this.git.checkout(this.config.branch)
-
-    // Perform initial sync
-    await this.sync()
-
-    WIKI.logger.info('(STORAGE/GIT) Initialization completed.')
   }
-  /**
-   * SYNC
-   */
   async sync() {
+    // 1. Get all pages on the local disk (from the database)
+    const storagePages = await WIKI.models.pages.query()
+
+    // 2. Get all pages from the Git `main` branch
+    const gitPagesRequest = await this.git.raw(['ls-tree', '-r', '--name-only', 'origin/main'])
+    const gitPages = gitPagesRequest.split('\n').filter(file => file.length > 0)
+
+    // 3. Identify pages that are in the local storage but not in the Git main branch
+    const pagesToUnpublish = storagePages.filter(page => {
+      const fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
+
+      return !gitPages.includes(fileName)
+    })
+
+    // 4. Identify pages that ARE in the Git main branch and need to be published
+    const pagesToPublish = storagePages.filter(page => {
+      const fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
+      return gitPages.includes(fileName)
+    })
+
+    // 5. Unpublish pages that are not in the Git main branch
+    if (pagesToUnpublish.length > 0) {
+      await WIKI.models.pages.query().patch({ isPublished: false }).whereIn('id', pagesToUnpublish.map(page => page.id))
+      console.log('Unpublished Pages:', pagesToUnpublish)
+    }
+
+    // 6. Publish pages that are in the Git main branch
+    if (pagesToPublish.length > 0) {
+      await WIKI.models.pages.query().patch({ isPublished: true }).whereIn('id', pagesToPublish.map(page => page.id))
+      console.log('Published Pages:', pagesToPublish)
+    }
+    Page.flushCache()
     const currentCommitLog = _.get(await this.git.log(['-n', '1', this.config.branch, '--']), 'latest', {})
 
     const rootUser = await WIKI.models.users.getRootUser()
@@ -300,6 +328,22 @@ module.exports = class FFStorageSyncModule {
   async created(page) {
     WIKI.logger.info(`(STORAGE/GIT) Committing new file [${page.localeCode}] ${page.path}...`)
     let fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
+
+    // Generate branch name for this new page
+    const branchName = `create/new-${page.path.replace(/\//g, '-')}`
+
+    // Check if the branch exists locally or remotely
+    const branches = await this.git.branch(['-a'])
+    const branchExists = _.includes(branches.all, `remotes/origin/${branchName}`) || _.includes(branches.all, branchName)
+
+    if (branchExists) {
+      WIKI.logger.info(`(STORAGE/GIT) Branch ${branchName} already exists. Deleting it.`)
+      await this.git.raw(['branch', '-D', branchName])
+    }
+
+    WIKI.logger.info(`(STORAGE/GIT) Creating and switching to new branch: ${branchName}`)
+    await this.git.checkoutLocalBranch(branchName)
+
     if (WIKI.config.lang.namespacing && WIKI.config.lang.code !== page.localeCode) {
       fileName = `${page.localeCode}/${fileName}`
     }
@@ -312,7 +356,14 @@ module.exports = class FFStorageSyncModule {
       await this.git.commit(`docs: create ${page.path}`, fileName, {
         '--author': `"${page.authorName} <${page.authorEmail}>"`
       })
+      if (!branchExists) {
+        await this.git.push('origin', branchName, ['--set-upstream'])
+      } else {
+        await this.git.push('origin', branchName)
+      }
     }
+    await this.git.checkout('main')
+    this.sync()
   }
   /**
    * UPDATE
@@ -322,6 +373,21 @@ module.exports = class FFStorageSyncModule {
   async updated(page) {
     WIKI.logger.info(`(STORAGE/GIT) Committing updated file [${page.localeCode}] ${page.path}...`)
     let fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
+
+    const branchName = `create/new-${page.path.replace(/\//g, '-')}`
+
+    // Check if the branch exists locally or remotely
+    const branches = await this.git.branch(['-a'])
+    const branchExists = _.includes(branches.all, `remotes/origin/${branchName}`) || _.includes(branches.all, branchName)
+
+    if (branchExists) {
+      WIKI.logger.info(`(STORAGE/GIT) Branch ${branchName} already exists. Checking it out.`)
+      await this.git.checkout(branchName)
+    } else {
+      WIKI.logger.info(`(STORAGE/GIT) Creating and switching to new branch: ${branchName}`)
+      await this.git.checkoutLocalBranch(branchName)
+    }
+
     if (WIKI.config.lang.namespacing && WIKI.config.lang.code !== page.localeCode) {
       fileName = `${page.localeCode}/${fileName}`
     }
@@ -334,56 +400,54 @@ module.exports = class FFStorageSyncModule {
       await this.git.commit(`docs: update ${page.path}`, fileName, {
         '--author': `"${page.authorName} <${page.authorEmail}>"`
       })
+
+      if (!branchExists) {
+        await this.git.push('origin', branchName, ['--set-upstream'])
+      } else {
+        await this.git.push('origin', branchName)
+      }
     }
+    await this.git.checkout('main')
+
+    this.sync()
   }
   /**
-   * DELETE
-   *
-   * @param {Object} page Page to delete
-   */
+ * DELETE
+ *
+ * @param {Object} page Page to delete
+ */
   async deleted(page) {
-    WIKI.logger.info(`(STORAGE/GIT) Committing removed file [${page.localeCode}] ${page.path}...`)
-    let fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
-    if (WIKI.config.lang.namespacing && WIKI.config.lang.code !== page.localeCode) {
-      fileName = `${page.localeCode}/${fileName}`
-    }
+    try {
+      WIKI.logger.info(`(STORAGE/GIT) Checking for file [${page.localeCode}] ${page.path} in the remote repository...`)
 
-    const gitFilePath = `./${fileName}`
-    if ((await this.git.checkIgnore(gitFilePath)).length === 0) {
-      await this.git.rm(gitFilePath)
-      await this.git.commit(`docs: delete ${page.path}`, fileName, {
-        '--author': `"${page.authorName} <${page.authorEmail}>"`
-      })
-    }
-  }
-  /**
-   * RENAME
-   *
-   * @param {Object} page Page to rename
-   */
-  async renamed(page) {
-    WIKI.logger.info(`(STORAGE/GIT) Committing file move from [${page.localeCode}] ${page.path} to [${page.destinationLocaleCode}] ${page.destinationPath}...`)
-    let sourceFileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
-    let destinationFileName = `${page.destinationPath}.${pageHelper.getFileExtension(page.contentType)}`
+      // Define the file name based on the page path and content type
+      let fileName = `${page.path}.${pageHelper.getFileExtension(page.contentType)}`
 
-    if (WIKI.config.lang.namespacing) {
-      if (WIKI.config.lang.code !== page.localeCode) {
-        sourceFileName = `${page.localeCode}/${sourceFileName}`
+      // Use `git ls-tree` to check if the file exists in the remote `main` branch
+      const gitFiles = await this.git.raw(['ls-tree', '-r', '--name-only', 'origin/main'])
+      const fileExistsInRemote = gitFiles.split('\n').includes(fileName)
+
+      // If the file exists in the remote repository, delete it and push the change
+      if (fileExistsInRemote) {
+        // Remove the file from the local repo path
+        await fs.remove(path.join(this.repoPath, fileName))
+
+        // Stage the file deletion and commit the change
+        await this.git.rm(fileName)
+        await this.git.commit(`docs: delete ${page.path}`, fileName, {
+          '--author': `"${page.authorName} <${page.authorEmail}>"`
+        })
+
+        // Push the deletion directly to the main branch
+        await this.git.push('origin', 'main')
+
+        WIKI.logger.info(`(STORAGE/GIT) File ${fileName} deleted from remote repository and changes pushed to main branch.`)
+      } else {
+        WIKI.logger.warn(`(STORAGE/GIT) File ${fileName} does not exist in the remote repository, skipping deletion.`)
       }
-      if (WIKI.config.lang.code !== page.destinationLocaleCode) {
-        destinationFileName = `${page.destinationLocaleCode}/${destinationFileName}`
-      }
+    } catch (error) {
+      WIKI.logger.error(`(STORAGE/GIT) Error deleting file: ${error.message}`)
     }
-
-    const sourceFilePath = path.join(this.repoPath, sourceFileName)
-    const destinationFilePath = path.join(this.repoPath, destinationFileName)
-    await fs.move(sourceFilePath, destinationFilePath)
-
-    await this.git.rm(`./${sourceFileName}`)
-    await this.git.add(`./${destinationFileName}`)
-    await this.git.commit(`docs: rename ${page.path} to ${page.destinationPath}`, [sourceFilePath, destinationFilePath], {
-      '--author': `"${page.moveAuthorName} <${page.moveAuthorEmail}>"`
-    })
   }
   /**
    * ASSET UPLOAD
